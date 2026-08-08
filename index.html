@@ -911,6 +911,12 @@
             The prototype now pauses when the garment and style description conflict and asks whether to keep the selected garment or correct the style detail.
           </div>
         </section>
+        <section class="improvement-card" aria-labelledby="dress-trouser-conflict-improvement-heading">
+          <h3 id="dress-trouser-conflict-improvement-heading">Smoke-test regression fix · Dress and trouser requirements conflict</h3>
+          <div><span class="k">Before</span> A customer could select a dress but describe trouser requirements elsewhere in the consultation. The mismatch was missed because the check omitted dresses and inspected only the style field.</div>
+          <div><span class="k">Change</span> Expanded conflict detection to inspect both functional-needs and style responses, include dresses, and recognise explicit garment-category terms such as dress, trousers and pants.</div>
+          <div><span class="k">After</span> The prototype pauses before concept generation, explains the mismatch, cites CC-06 (conflicting requirements must be clarified), and asks whether the customer wants a dress or trousers. The corrected path was verified in the browser.</div>
+        </section>
         <section class="improvement-card" aria-labelledby="spec-visual-improvement-heading">
           <h3 id="spec-visual-improvement-heading">Additional output improvement · Simpler specification and garment-specific visuals</h3>
           <div>
@@ -1329,8 +1335,8 @@ DECISION PROCESS
 1. Observe the selected consultation and its linked customer profile.
 2. Check consultation completeness using CONSULTATION_COMPLETENESS_POLICY.
 3. Check medical, safety, conflict, revision-limit, human-assistance, and Knowledge Base gap conditions using SAFETY_AND_ESCALATION_POLICY.
-4. If required information is missing, ask no more than three targeted follow-up questions and do not generate a concept. Combine related garment questions and prioritise only information essential to the next decision.
-5. If requirements conflict, identify the conflict and ask the customer to clarify priorities.
+4. If required information is missing, ask no more than three targeted follow-up questions and do not generate a concept. Combine related garment questions and prioritise only information essential to the next decision. Check that every required question has been answered. If the customer submits no answer, skips a numbered question, or answers only part of the question set, repeat only the unanswered questions once in simpler language. If those questions remain unanswered a second time, stop and escalate under SE-06 with a concise summary of the missing information.
+5. If requirements conflict, identify both requirements, explain their practical conflict in plain language, and ask the customer which should take priority. Do not generate a concept until the customer resolves the conflict.
 6. Retrieve only directly relevant KNOWLEDGE_BASE entries.
 7. Recommend only features supported by those entries and cite every feature with its exact entry_id.
 8. Present work for customer review. Never treat a draft as approved.
@@ -1393,8 +1399,8 @@ Never state MISSING INFORMATION: None while also asking a required follow-up que
 
 ESCALATION
 Stop and escalate, clearly stating the reason and applicable policy section, when:
-- Information required to complete the consultation cannot be obtained.
-- Customer requirements conflict or cannot be confidently resolved after clarification.
+- Information required to complete the consultation cannot be obtained after the questions have been repeated once.
+- Customer requirements conflict and remain unresolved after the customer has been asked which requirement should take priority.
 - A customer requirement is not covered by the Adaptive Clothing Knowledge Base.
 - The customer rejects two consecutive concept revisions.
 - The customer requests human assistance.
@@ -2058,7 +2064,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       }
     }
 
-    const CUSTOMER_DEMO_STATE = { parsed: null, boundaryReturnParsed: null, raw: "", revisionCount: 0, specificationRevisionCount: 0, conceptRevisionHistory: [], feedback: "", followUpResponses: [], inspirationImage: null, inspirationImageName: "", measurementsSubmitted: false };
+    const CUSTOMER_DEMO_STATE = { parsed: null, boundaryReturnParsed: null, raw: "", revisionCount: 0, specificationRevisionCount: 0, conceptRevisionHistory: [], feedback: "", followUpResponses: [], unansweredFollowUpAttempts: 0, inspirationImage: null, inspirationImageName: "", measurementsSubmitted: false };
 
     const GARMENT_MEASUREMENTS = {
       trousers: ["measure-waist", "measure-hip", "measure-inseam", "measure-rise"],
@@ -2202,6 +2208,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
           specification_revision_count: CUSTOMER_DEMO_STATE.specificationRevisionCount,
           customer_feedback: CUSTOMER_DEMO_STATE.feedback || "None",
           follow_up_answers: CUSTOMER_DEMO_STATE.followUpResponses.map(item => item.answer),
+          unanswered_follow_up_attempts: CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts,
           concept_approved: specificationRequested,
           approved_concept: specificationRequested ? CUSTOMER_DEMO_STATE.parsed : "Not yet approved",
           instruction: extraInstruction || "Create a grounded concept or ask follow-up questions if required information is missing."
@@ -2534,6 +2541,43 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       history.append(summary, thread); container.append(history);
     }
 
+    function unansweredFollowUpQuestions(questions, answer) {
+      const numbered = [...String(questions || "").matchAll(/(?:^|\n|\s)(\d+)[.)]\s*([\s\S]*?)(?=(?:\n|\s)\d+[.)]\s|$)/g)]
+        .map(match => ({ number: Number(match[1]), text: match[2].trim() }));
+      if (numbered.length < 2) return [];
+      const skipped = new Set();
+      for (const match of String(answer || "").matchAll(/\b(?:ignore|skip|omit|not answer|leave out)\s+(?:question(?:s)?\s*)?((?:\d\s*(?:,|and|&)?\s*)+)/gi)) {
+        for (const digit of match[1].match(/\d+/g) || []) skipped.add(Number(digit));
+      }
+      const numberedAnswers = new Set([...String(answer || "").matchAll(/(?:^|\n|\s)(\d+)[.)]\s*\S/g)].map(match => Number(match[1])));
+      if (numberedAnswers.size) {
+        numbered.forEach(item => { if (!numberedAnswers.has(item.number)) skipped.add(item.number); });
+      }
+      return numbered.filter(item => skipped.has(item.number));
+    }
+
+    function buildUnresolvedInformationEscalation(parsed = {}) {
+      return {
+        "DECISION": "Escalate",
+        "RESULT STATUS": "OK",
+        "REASON": "The information needed to continue could not be obtained after the questions were repeated once.",
+        "WHY": "Required follow-up questions remained unresolved after two customer response attempts, so SE-06 requires a human handoff instead of guessing.",
+        "CITATIONS": "customer_input#CURRENT, consultation_input#CURRENT, consultation_completeness_policy.md#CC-05, safety_and_escalation_policy.md#SE-06",
+        "CUSTOMER REQUIREMENTS": `${document.querySelector("#customer-garment").value}; ${document.querySelector("#customer-needs").value}; ${document.querySelector("#customer-style").value}`,
+        "MISSING INFORMATION": parsed["MISSING INFORMATION"] || "Answers to the required follow-up questions",
+        "CONFLICTS OR LIMITATIONS": parsed["CONFLICTS OR LIMITATIONS"] || "Required information remains unresolved",
+        "FOLLOW-UP QUESTIONS": "None",
+        "CONCEPT DRAWING BRIEF": "Not generated",
+        "STYLE, COLOUR, AND MATERIAL": "Not generated",
+        "INSPIRATION CUES": "None",
+        "ADAPTIVE FEATURES": "Not generated",
+        "MANUFACTURING SPECIFICATION": "Not generated",
+        "APPROVAL STATUS": "Not applicable",
+        "ESCALATION STATUS": "Escalated",
+        "ESCALATION REASON": "SE-06 — required information could not be obtained; human designer required"
+      };
+    }
+
     function renderFollowUpChat(container, parsed) {
       const heading = document.createElement("h3");
       heading.textContent = "Questions";
@@ -2596,7 +2640,32 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       send.textContent = "Send answers";
       send.addEventListener("click", async () => {
         const answer = reply.value.trim();
-        if (!answer) return reply.focus();
+        const unanswered = answer ? unansweredFollowUpQuestions(questions, answer) : [];
+        if (!answer || unanswered.length) {
+          CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts += 1;
+          if (CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts === 1) {
+            if (answer) CUSTOMER_DEMO_STATE.followUpResponses.push({ questions, answer });
+            const remainingQuestions = unanswered.length
+              ? unanswered.map((item, index) => `${index + 1}) ${item.text}`).join("\n")
+              : questions;
+            parsed["FOLLOW-UP QUESTIONS"] = remainingQuestions;
+            parsed["MISSING INFORMATION"] = unanswered.length
+              ? `Answers to question${unanswered.length === 1 ? "" : "s"} ${unanswered.map(item => item.number).join(", ")}`
+              : parsed["MISSING INFORMATION"];
+            currentMessage.replaceChildren(currentLabel, document.createTextNode(`I still need the remaining information before I can design safely. Please answer the question${unanswered.length === 1 ? "" : "s"} below, even briefly:\n${remainingQuestions}`));
+            hint.textContent = "The unanswered questions are required. If you cannot provide them, submit once more and the consultation will be handed to a human designer.";
+            reply.placeholder = "Type an answer, or submit once more if you cannot answer…";
+            reply.value = "";
+            reply.focus();
+            return;
+          }
+          const escalation = buildUnresolvedInformationEscalation(parsed);
+          CUSTOMER_DEMO_STATE.parsed = escalation;
+          renderCustomerResult(escalation);
+          renderLiveCustomerEvidence(escalation, "Escalated to human designer");
+          addRunLogEntry("CUSTOMER-CURRENT", "Escalate", "SE-06 — unanswered follow-up questions");
+          return;
+        }
         CUSTOMER_DEMO_STATE.followUpResponses.push({ questions, answer });
         await runCustomerConsultation(
           "The customer answered the latest follow-up questions. Use these answers with all previous context. Do not repeat answered questions. Ask at most three new essential garment questions, or generate the concept if complete. Latest answer: " + answer,
@@ -3000,6 +3069,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       const isMedicalBoundary = /^Refuse\b/i.test(decisionText) && /SE-01|medical advice|healthcare professional/i.test(medicalBoundaryText);
       const isEscalated = !isMedicalBoundary && (/^escalate(?:d)?\b/i.test(decisionText) || /^escalated\b/i.test(escalationStatusText));
       const isRevisionLimitEscalation = isEscalated && CUSTOMER_DEMO_STATE.revisionCount >= 2;
+      const isUnresolvedInfoEscalation = isEscalated && /SE-06/i.test(`${parsed.CITATIONS || ""} ${parsed["ESCALATION REASON"] || ""}`);
       const decisionNeedsFollowUp = /follow-up|clarif/i.test(parsed.DECISION);
       const conceptWasNotGenerated = /^Not generated/i.test(String(parsed["CONCEPT DRAWING BRIEF"] || ""));
       const needsFollowUp = !isEscalated && (decisionNeedsFollowUp || (!generatedSpecification && conceptWasNotGenerated));
@@ -3020,6 +3090,8 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
         : isEscalated
         ? isRevisionLimitEscalation
           ? "According to safety and escalation policy SE-05, two concept revisions have been rejected, so automatic revision has stopped and human design support is required."
+          : isUnresolvedInfoEscalation
+            ? "According to safety and escalation policy SE-06, the required questions were repeated but remain unanswered, so the consultation has been referred to a human designer rather than making assumptions."
           : "Your requirements need individual design support, so the consultation has been referred for human review."
         : needsFollowUp
         ? `According to ${completenessPolicy}, I need a little more information before I can create your design.`
@@ -3248,6 +3320,75 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       input.focus();
     }
 
+    function buildMedicalAdviceCheck() {
+      const needs = document.querySelector("#customer-needs").value.trim();
+      const style = document.querySelector("#customer-style").value.trim();
+      const currentInput = `${needs} ${style}`;
+      const requestsMedicalAdvice = /\b(?:i\s+)?need medical advice\b|\bmedical advice\b|\bdiagnos(?:e|is|ing)\b|\btreat(?:ment|ing)?\b|\b(?:stop|start|change|adjust|take|use)\b[^.!?]{0,60}\b(?:prescribed|prescription|medication|medicine|dose|therapy|brace)\b|\b(?:prescribed|prescription|medication|medicine|dose)\b/i.test(currentInput);
+      if (!requestsMedicalAdvice) return null;
+      return {
+        "DECISION": "Refuse",
+        "RESULT STATUS": "REFUSED-ESCALATE",
+        "REASON": "I cannot provide medical advice or recommend changes to prescribed care.",
+        "WHY": "The customer explicitly requested medical advice, which is outside the clothing-design role under SE-01.",
+        "CITATIONS": "customer_input#CURRENT, safety_and_escalation_policy.md#SE-01",
+        "CUSTOMER REQUIREMENTS": `${document.querySelector("#customer-garment").value}; ${needs}; ${style}`,
+        "MISSING INFORMATION": "None",
+        "CONFLICTS OR LIMITATIONS": "Medical advice is outside the agent's garment-design role",
+        "FOLLOW-UP QUESTIONS": "None",
+        "CONCEPT DRAWING BRIEF": "Not generated",
+        "STYLE, COLOUR, AND MATERIAL": "Not generated",
+        "INSPIRATION CUES": "None",
+        "ADAPTIVE FEATURES": "Not generated",
+        "MANUFACTURING SPECIFICATION": "Not generated",
+        "APPROVAL STATUS": "Not applicable",
+        "ESCALATION STATUS": "Not escalated",
+        "ESCALATION REASON": "None — medical advice declined under SE-01; healthcare professional recommended"
+      };
+    }
+
+    function buildWrittenRequirementsConflictCheck() {
+      const garment = document.querySelector("#customer-garment").value;
+      const needs = document.querySelector("#customer-needs").value.trim();
+      const style = document.querySelector("#customer-style").value.trim();
+      const combined = `${needs} ${style}`;
+      const comfort = combined.match(/\b(comfortable|comfy|loose|relaxed|roomy|easy movement|wide fit)\b/i);
+      const closeFit = combined.match(/\b(very tight|skin[- ]tight|bodycon|close[- ]fitting|fitted|skinny fit)\b/i);
+      const dexterityNeed = combined.match(/\b(limited|reduced|weak|poor|low)\b[^.!?]{0,35}\b(dexterity|grip|hand strength|finger movement)\b|\bone[- ]handed\b/i);
+      const difficultFastening = combined.match(/\b(small buttons?|tiny buttons?|standard buttons?|small zip pull|tiny zip pull)\b/i);
+      let first = "";
+      let second = "";
+      let effect = "";
+      if (comfort && closeFit) {
+        first = comfort[0]; second = closeFit[0];
+        effect = "A close fit may reduce the room and ease of movement requested for comfort.";
+      } else if (dexterityNeed && difficultFastening) {
+        first = dexterityNeed[0]; second = difficultFastening[0];
+        effect = "That fastening may be difficult to operate with the stated hand or grip limitation.";
+      } else {
+        return null;
+      }
+      return {
+        "DECISION": "Ask follow-up questions",
+        "RESULT STATUS": "OK",
+        "REASON": "Two written requirements appear to conflict, so I need you to choose which matters most.",
+        "WHY": `The customer requested “${first}” and “${second}”. CC-06 requires clarification instead of a silent choice.`,
+        "CITATIONS": "customer_input#CURRENT, consultation_input#CURRENT, consultation_completeness_policy.md#CC-06",
+        "CUSTOMER REQUIREMENTS": `${garment}; ${needs}; ${style}`,
+        "MISSING INFORMATION": "which conflicting requirement should take priority",
+        "CONFLICTS OR LIMITATIONS": `${first} conflicts with ${second}. ${effect}`,
+        "FOLLOW-UP QUESTIONS": `You asked for both “${first}” and “${second}”. ${effect} Which should I prioritise in the design?`,
+        "CONCEPT DRAWING BRIEF": "Not generated",
+        "STYLE, COLOUR, AND MATERIAL": "Not generated",
+        "INSPIRATION CUES": CUSTOMER_DEMO_STATE.inspirationImage ? "Not assessed until the written conflict is clarified" : "None",
+        "ADAPTIVE FEATURES": "Not generated",
+        "MANUFACTURING SPECIFICATION": "Not generated — concept approval required",
+        "APPROVAL STATUS": "Not applicable",
+        "ESCALATION STATUS": "Not escalated",
+        "ESCALATION REASON": "None"
+      };
+    }
+
     function buildAccessCompletenessCheck() {
       const needs = document.querySelector("#customer-needs").value.trim();
       const style = document.querySelector("#customer-style").value.trim();
@@ -3291,19 +3432,54 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       };
     }
 
+    function buildPublicInspirationPriorityCheck() {
+      if (!IS_PUBLIC_DEMO || !CUSTOMER_DEMO_STATE.inspirationImage) return null;
+      const garment = document.querySelector("#customer-garment").value;
+      const needs = document.querySelector("#customer-needs").value.trim();
+      const style = document.querySelector("#customer-style").value.trim();
+      return {
+        "DECISION": "Ask follow-up questions",
+        "RESULT STATUS": "OK",
+        "REASON": "Your inspiration picture may show a different fit or colour from your written preferences.",
+        "WHY": "The public demo cannot reliably inspect every visual detail in an uploaded picture, so CC-06 requires the customer to confirm which source should take priority instead of the agent making a silent assumption.",
+        "CITATIONS": "customer_input#CURRENT, consultation_input#CURRENT, consultation_completeness_policy.md#CC-06",
+        "CUSTOMER REQUIREMENTS": `${garment}; ${needs}; ${style}`,
+        "MISSING INFORMATION": "how the inspiration picture should influence the design",
+        "CONFLICTS OR LIMITATIONS": "The uploaded picture may differ from the requested comfort, fit, or colour. No visual detail will override the written requirements without confirmation.",
+        "FOLLOW-UP QUESTIONS": "Your inspiration picture may show a different fit or colour from what you wrote. Should I use it only for the general trouser shape, or should it also influence the fit or colour? Your written comfort and colour preferences will take priority unless you tell me otherwise.",
+        "CONCEPT DRAWING BRIEF": "Not generated",
+        "STYLE, COLOUR, AND MATERIAL": "Not generated",
+        "INSPIRATION CUES": "Awaiting confirmation of whether the picture is a general shape reference, fit reference, or colour reference",
+        "ADAPTIVE FEATURES": "Not generated",
+        "MANUFACTURING SPECIFICATION": "Not generated — concept approval required",
+        "APPROVAL STATUS": "Not applicable",
+        "ESCALATION STATUS": "Not escalated",
+        "ESCALATION REASON": "None"
+      };
+    }
+
     function buildGarmentStyleConflictCheck() {
       const garment = document.querySelector("#customer-garment").value;
+      const needs = document.querySelector("#customer-needs").value.trim();
       const style = document.querySelector("#customer-style").value.trim();
-      const lowerBodyStyle = style.match(/\b(straight[- ]leg|wide[- ]leg|tapered[- ]leg|skinny[- ]leg|bootcut)\b/i);
-      const upperBodyStyle = style.match(/\b(sleeve|cuff|collar|neckline)\b/i);
-      const upperGarments = new Set(["shirt", "top", "jacket"]);
+      const writtenRequirements = `${needs} ${style}`;
+      const lowerBodyStyle = writtenRequirements.match(/\b(trousers?|pants?|straight[- ]leg|wide[- ]leg|tapered[- ]leg|skinny[- ]leg|bootcut)\b/i);
+      const upperBodyStyle = writtenRequirements.match(/\b(shirts?|tops?|blouses?|jackets?|sleeve|cuff|collar|neckline)\b/i);
+      const dressStyle = writtenRequirements.match(/\b(dress|gown|halter dress)\b/i);
+      const upperGarments = new Set(["shirt", "top", "jacket", "dress"]);
       const lowerGarments = new Set(["trousers", "skirt"]);
       let conflict = null;
+      let conflictingPhrase = null;
 
       if (upperGarments.has(garment) && lowerBodyStyle) {
         conflict = `“${lowerBodyStyle[0]}” describes trousers, but the selected garment is ${garment}`;
+        conflictingPhrase = lowerBodyStyle[0];
       } else if (lowerGarments.has(garment) && upperBodyStyle) {
         conflict = `“${upperBodyStyle[0]}” describes an upper-body garment, but the selected garment is ${garment}`;
+        conflictingPhrase = upperBodyStyle[0];
+      } else if (garment !== "dress" && dressStyle) {
+        conflict = `“${dressStyle[0]}” describes a dress, but the selected garment is ${garment}`;
+        conflictingPhrase = dressStyle[0];
       }
       if (!conflict) return null;
 
@@ -3313,10 +3489,10 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
         "REASON": "The selected garment and written style description do not match.",
         "WHY": `The customer selected ${garment}, but the style says ${conflict.split(", but")[0]}; CC-06 requires clarification rather than a silent assumption.`,
         "CITATIONS": "customer_input#CURRENT, consultation_input#CURRENT, consultation_completeness_policy.md#CC-06",
-        "CUSTOMER REQUIREMENTS": `${garment}; ${style}`,
+        "CUSTOMER REQUIREMENTS": `${garment}; ${needs}; ${style}`,
         "MISSING INFORMATION": "confirmation of the intended garment or corrected style preference",
         "CONFLICTS OR LIMITATIONS": conflict,
-        "FOLLOW-UP QUESTIONS": `You selected ${garment}, but “${lowerBodyStyle?.[0] || upperBodyStyle?.[0]}” appears to describe a different garment. Should I keep the ${garment} and update that style detail, or did you mean to select another garment?`,
+        "FOLLOW-UP QUESTIONS": `You selected ${garment}, but “${conflictingPhrase}” appears to describe a different garment. Should I keep the ${garment} and update that requirement, or did you mean to select another garment?`,
         "CONCEPT DRAWING BRIEF": "Not generated",
         "STYLE, COLOUR, AND MATERIAL": "Not generated",
         "INSPIRATION CUES": CUSTOMER_DEMO_STATE.inspirationImage ? "Not assessed until the garment and style conflict is clarified" : "None",
@@ -3381,7 +3557,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       const container = document.querySelector("#customer-concept-result");
       trigger.disabled = true;
       const preflight = !instruction && !CUSTOMER_DEMO_STATE.followUpResponses.length
-        ? buildGarmentStyleConflictCheck() || buildAccessCompletenessCheck()
+        ? buildMedicalAdviceCheck() || buildGarmentStyleConflictCheck() || buildWrittenRequirementsConflictCheck() || buildPublicInspirationPriorityCheck() || buildAccessCompletenessCheck()
         : null;
       if (preflight) {
         CUSTOMER_DEMO_STATE.parsed = preflight;
@@ -3401,7 +3577,17 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
         const raw = await callCustomerAgent(instruction);
         const parsedResponse = parseLabeledResponse(raw);
         if (!parsedResponse) throw new Error("Agent output did not match the required format.");
-        const parsed = enforceCustomerWorkflow(parsedResponse, instruction);
+        let parsed = enforceCustomerWorkflow(parsedResponse, instruction);
+        const answeredFollowUp = /customer answered the latest follow-up questions/i.test(instruction);
+        const stillNeedsFollowUp = /follow-up|clarif/i.test(String(parsed.DECISION || ""));
+        if (answeredFollowUp && stillNeedsFollowUp) {
+          CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts += 1;
+          if (CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts >= 2) {
+            parsed = buildUnresolvedInformationEscalation(parsed);
+          }
+        } else if (!stillNeedsFollowUp) {
+          CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts = 0;
+        }
         const isMedicalBoundaryResponse = /^Refuse\b/i.test(String(parsed.DECISION || "")) && /\bSE-01\b/i.test(`${parsed.CITATIONS || ""} ${parsed.REASON || ""} ${parsed.WHY || ""}`);
         if (isMedicalBoundaryResponse && CUSTOMER_DEMO_STATE.parsed) {
           CUSTOMER_DEMO_STATE.boundaryReturnParsed = CUSTOMER_DEMO_STATE.parsed;
@@ -3495,6 +3681,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       CUSTOMER_DEMO_STATE.conceptRevisionHistory = [];
       CUSTOMER_DEMO_STATE.feedback = "";
       CUSTOMER_DEMO_STATE.followUpResponses = [];
+      CUSTOMER_DEMO_STATE.unansweredFollowUpAttempts = 0;
       CUSTOMER_DEMO_STATE.boundaryReturnParsed = null;
       runCustomerConsultation();
     });
