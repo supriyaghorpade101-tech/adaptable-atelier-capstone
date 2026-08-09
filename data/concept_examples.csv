@@ -1,0 +1,5 @@
+example_id,garment_type,customer_need,concept_summary,feature_ids,approval_outcome
+EX-001,trousers,seated comfort,"Tailored trousers with a high back rise; shaped seat; and soft waistband.","KB-002; KB-009; KB-014",Approved after one revision
+EX-002,shirt,reduced hand strength,"Casual shirt with concealed low-force closures and large cuff tabs.","KB-004; KB-005",Approved
+EX-003,hoodie,sensory sensitivity,"Relaxed hoodie with flat seams; printed label; and wide neck opening.","KB-007; KB-008; KB-010",Approved
+EX-004,top,one-handed dressing,"Loose top with a reachable asymmetric opening and protected closure edges.","KB-006; KB-013",Approved after one revision
