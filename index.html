@@ -2023,7 +2023,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
 
       try {
         if (IS_PUBLIC_DEMO) {
-          const demoText = enforceConsultationConflictGate(
+          const demoText = enforceConsultationEvalGates(
             buildPublicDemoResponse("", consultation.request, customer?.garment_type || "garment"),
             consultation,
             customer
@@ -2054,7 +2054,7 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
         if (!result.output_text) {
           throw Object.assign(new Error("The model returned no text."), { status: response.status });
         }
-        const checkedOutput = enforceConsultationConflictGate(result.output_text, consultation, customer);
+        const checkedOutput = enforceConsultationEvalGates(result.output_text, consultation, customer);
         const parsed = renderAgentResponse(output, checkedOutput, caseId);
         addRunLogEntry(caseId, parsed?.DECISION || "Unparsed", "Awaiting human action");
         return parsed
@@ -2229,7 +2229,52 @@ The customer reviews, edits, approves, rejects, or escalates both the concept de
       return OUTPUT_FIELDS.map(label => `${label}: ${fields[label] || "None"}`).join("\n");
     }
 
-    function enforceConsultationConflictGate(rawText, consultation, customer) {
+    function enforceConsultationEvalGates(rawText, consultation, customer) {
+      const missingInformation = String(consultation?.missing_information || "");
+      if (consultation?.status === "concept_approved" && !/^none$/i.test(missingInformation)) {
+        return labeledDemoResponse({
+          "DECISION": "Ask follow-up questions",
+          "RESULT STATUS": "OK",
+          "REASON": "The approved concept is retained, but garment-specific production measurements are still missing.",
+          "WHY": "CC-03 and CC-05 prohibit specification generation until every garment-relevant measurement has been supplied, marked not applicable, or deliberately deferred.",
+          "CITATIONS": `consultation_cases.csv#${consultation?.case_id || "CURRENT"}, consultation_completeness_policy.md#CC-03, consultation_completeness_policy.md#CC-05`,
+          "CUSTOMER REQUIREMENTS": `${customer?.garment_type || "garment"}; approved concept retained`,
+          "MISSING INFORMATION": missingInformation,
+          "CONFLICTS OR LIMITATIONS": "A manufacturing specification cannot be generated with incomplete production measurements.",
+          "FOLLOW-UP QUESTIONS": `Please provide or set a status for these garment measurements: ${missingInformation}.`,
+          "CONCEPT DRAWING BRIEF": "Approved concept retained — no new concept generated",
+          "STYLE, COLOUR, AND MATERIAL": customer?.style_preferences || "Approved concept retained",
+          "INSPIRATION CUES": "None",
+          "ADAPTIVE FEATURES": "Approved concept retained",
+          "MANUFACTURING SPECIFICATION": "Not generated — garment-specific measurements are incomplete",
+          "APPROVAL STATUS": "Concept approved; specification not yet available",
+          "ESCALATION STATUS": "Not escalated",
+          "ESCALATION REASON": "None"
+        });
+      }
+
+      if (consultation?.status === "revision_requested" && Number(consultation?.revision_count) >= 2) {
+        return labeledDemoResponse({
+          "DECISION": "Escalate",
+          "RESULT STATUS": "REFUSED-ESCALATE",
+          "REASON": "Two completed concept revisions have been rejected, so another automated revision will not be generated.",
+          "WHY": "SE-05 requires the consultation to stop before a third revision and move to a human designer.",
+          "CITATIONS": `consultation_cases.csv#${consultation?.case_id || "CURRENT"}, safety_and_escalation_policy.md#SE-05`,
+          "CUSTOMER REQUIREMENTS": `${customer?.garment_type || "garment"}; ${consultation?.request || ""}`,
+          "MISSING INFORMATION": "None",
+          "CONFLICTS OR LIMITATIONS": "The automated revision limit has been reached.",
+          "FOLLOW-UP QUESTIONS": "None",
+          "CONCEPT DRAWING BRIEF": "Not generated",
+          "STYLE, COLOUR, AND MATERIAL": "Not generated",
+          "INSPIRATION CUES": "None",
+          "ADAPTIVE FEATURES": "Not generated",
+          "MANUFACTURING SPECIFICATION": "Not generated",
+          "APPROVAL STATUS": "Not applicable",
+          "ESCALATION STATUS": "Escalated to human designer",
+          "ESCALATION REASON": "SE-05 — two rejected concept revisions; human designer required"
+        });
+      }
+
       if (String(consultation?.conflict_flag).toLowerCase() !== "true") return rawText;
 
       const context = `${consultation?.request || ""} ${customer?.accessibility_needs || ""} ${customer?.dexterity || ""} ${customer?.style_preferences || ""}`;
